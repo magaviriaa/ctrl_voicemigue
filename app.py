@@ -1,65 +1,77 @@
 import os
+import json
+import time
 import streamlit as st
+from PIL import Image
+
+import paho.mqtt.client as paho
 from bokeh.models.widgets import Button
 from bokeh.models import CustomJS
 from streamlit_bokeh_events import streamlit_bokeh_events
-from PIL import Image
-import time
-import glob
-import paho.mqtt.client as paho
-import json
-from gtts import gTTS
-from googletrans import Translator
 
-def on_publish(client,userdata,result):             #create function for callback
-    print("el dato ha sido publicado \n")
-    pass
+# -----------------------
+# MQTT config
+# -----------------------
+BROKER = "broker.mqttdashboard.com"
+PORT = 1883
+TOPIC = "voice_ctrl"
 
-def on_message(client, userdata, message):
-    global message_received
-    time.sleep(2)
-    message_received=str(message.payload.decode("utf-8"))
-    st.write(message_received)
+def on_publish(client, userdata, result):
+    # Solo para log
+    print("Mensaje publicado")
 
-broker="broker.mqttdashboard.com"
-port=1883
-client1= paho.Client("GIT-HUBC")
-client1.on_message = on_message
+# Prepara cliente MQTT (publicaremos solo cuando haya texto)
+mqtt_client = paho.Client(client_id="GIT-HUBC")
+mqtt_client.on_publish = on_publish
 
+# -----------------------
+# UI
+# -----------------------
+st.title("Swiftie Voice Control — MQTT")
+st.subheader("Di un comando y lo publicamos por MQTT (Taylor’s Version)")
 
+# Imagen (cámbiala en tu repo si quieres)
+IMG = "swift_voice.jpg"
+if os.path.exists(IMG):
+    st.image(Image.open(IMG), width=220)
+else:
+    st.info("Sube una imagen llamada **swift_voice.jpg** a la carpeta del proyecto.")
 
-st.title("INTERFACES MULTIMODALES")
-st.subheader("CONTROL POR VOZ")
+st.write("Presiona el botón y di tu comando:")
 
-image = Image.open('voice_ctrl.jpg')
+# -----------------------
+# Botón de voz (Web Speech API)
+# -----------------------
+stt_button = Button(label=" Iniciar 🎤 ", width=220)
 
-st.image(image, width=200)
-
-
-
-
-st.write("Toca el Botón y habla ")
-
-stt_button = Button(label=" Inicio ", width=200)
-
-stt_button.js_on_event("button_click", CustomJS(code="""
-    var recognition = new webkitSpeechRecognition();
+stt_button.js_on_event(
+    "button_click",
+    CustomJS(
+        code=r"""
+const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (!SpeechRec) {
+    alert("Este navegador no soporta reconocimiento de voz.");
+} else {
+    const recognition = new SpeechRec();
     recognition.continuous = true;
     recognition.interimResults = true;
- 
-    recognition.onresult = function (e) {
-        var value = "";
-        for (var i = e.resultIndex; i < e.results.length; ++i) {
+
+    recognition.onresult = (e) => {
+        let value = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) {
             if (e.results[i].isFinal) {
                 value += e.results[i][0].transcript;
             }
         }
-        if ( value != "") {
-            document.dispatchEvent(new CustomEvent("GET_TEXT", {detail: value}));
+        if (value !== "") {
+            document.dispatchEvent(new CustomEvent("GET_TEXT", { detail: value }));
         }
-    }
+    };
     recognition.start();
-    """))
+}
+"""
+    ),
+)
 
 result = streamlit_bokeh_events(
     stt_button,
@@ -67,18 +79,25 @@ result = streamlit_bokeh_events(
     key="listen",
     refresh_on_update=False,
     override_height=75,
-    debounce_time=0)
+    debounce_time=0,
+)
 
-if result:
-    if "GET_TEXT" in result:
-        st.write(result.get("GET_TEXT"))
-        client1.on_publish = on_publish                            
-        client1.connect(broker,port)  
-        message =json.dumps({"Act1":result.get("GET_TEXT").strip()})
-        ret= client1.publish("voice_ctrl", message)
+# -----------------------
+# Publicación por MQTT
+# -----------------------
+if result and "GET_TEXT" in result:
+    text = result.get("GET_TEXT").strip()
+    st.write("**Reconocido:**", text)
 
-    
+    # Mensaje JSON (misma estructura que tenías)
+    payload = json.dumps({"Act1": text})
+
     try:
-        os.mkdir("temp")
-    except:
-        pass
+        mqtt_client.connect(BROKER, PORT, keepalive=10)
+        # Publica y da un pequeño margen para que salga del socket
+        rc, mid = mqtt_client.publish(TOPIC, payload=payload, qos=0, retain=False)
+        mqtt_client.loop(0.2)
+        st.success("Comando enviado por MQTT ✅")
+        st.code(f"TOPIC: {TOPIC}\nPAYLOAD: {payload}", language="json")
+    except Exception as e:
+        st.error(f"Error publicando por MQTT: {e}")
